@@ -1,5 +1,4 @@
 import streamlit as st
-import pandas as pd
 import numpy as np
 import fitz  # PyMuPDF
 from PIL import Image
@@ -9,35 +8,35 @@ import os
 st.set_page_config(page_title="GS1 Data Matrix İşlem Merkezi", layout="wide")
 
 st.title("🛡️ GS1 Data Matrix Tarayıcı & Sütun Bölücü")
-st.write("Bu uygulama `zxing-cpp` motoru kullanarak görsellerden/PDF'lerden GS1 DataMatrix barkodlarını okuyabilir veya hazır listelerinizi sütunlara bölebilir.")
+st.write("Bu uygulama, hiçbir veri tabanına veya Pandas kurallarına takılmadan ham metin seviyesinde güvenli bölme işlemi yapar.")
 
 tab1, tab2 = st.tabs(["📊 Hazır Listeyi Sütunlara Böl", "📷 PDF / Görselden Barkod Oku"])
 
-# Temizleme fonksiyonu: Sadece birebir eşleşen başlık satırlarını eler, verilere dokunmaz
+# Temizleme fonksiyonu: Sadece birebir eşleşen başlık metinlerini listeden atar
 def veriyi_temizle(liste):
-    yasakli_basliklar = ["purchase order", "item serial code", "group", "product code"]
+    yasakli_basliklar = ["purchase order", "item serial code", "group", "product code", "purchase  оrder", "item  serial  code"]
     temiz_liste = []
     for eleman in liste:
         metin = str(eleman).strip()
         if not metin:
             continue
-        # Eğer satır tamamen başlık metninden ibaretse listeye ekleme
+        # Satırın kendisi doğrudan bir başlık ifadesiyse listeye ekleme
         if metin.lower() in yasakli_basliklar:
             continue
         temiz_liste.append(metin)
     return temiz_liste
 
-# Pandas kullanmadan, ASCII 29 karakterlerini ve ham string yapısını %100 koruyarak TXT üreten fonksiyon
+# Pandas kullanmadan, ASCII 29 karakterlerini ve tırnakları %100 orijinal haliyle koruyan yazıcı
 def matrisi_txt_yap(matris, kodlama):
     satirlar = []
     for satir in matris:
-        # Hücreleri yan yana sadece SEKME (\t) ile birleştir. Tırnak, escape vs. asla ekleme!
+        # Hücreleri yan yana sadece SEKME (\t) ile birleştirir. Ekstra tırnak veya escape asla gelmez.
         satirlar.append("\t".join([str(hucre) for hucre in satir]))
     ham_metin = "\n".join(satirlar)
     return ham_metin.encode(kodlama)
 
 # ---------------------------------------------------------
-# SEKME 1: HAZIR LİSTEYİ BÖLME
+# SEKME 1: HAZIR LİSTEYİ BÖLME (PANDAS OKUMA HATALARI ENGELLENDİ)
 # ---------------------------------------------------------
 with tab1:
     st.header("Excel veya CSV Listesini Böl")
@@ -46,16 +45,28 @@ with tab1:
     if uploaded_file is not None:
         orijinal_isim, uzanti = os.path.splitext(uploaded_file.name)
         try:
-            # Excel veya CSV'yi ham haliyle (her şeyi string tutarak) oku
+            ham_liste = []
+            
+            # EĞER DOSYA EXCEL İSE: Sadece hücre değerlerini almak için dataframe'e zorlamadan düz okuyoruz
             if uzanti.lower() == '.xlsx':
+                import pandas as pd
                 df = pd.read_excel(uploaded_file, header=None, dtype=str)
+                ham_liste = df.iloc[:, 0].dropna().tolist()
+            
+            # EĞER DOSYA CSV VEYA TXT İSE: Pandas'ı tamamen bypass edip ham satır olarak okuyoruz
             else:
-                df = pd.read_csv(uploaded_file, header=None, dtype=str)
+                # Dosyanın binary (raw bytes) içeriğini oku ve metne dönüştür
+                dosya_icerik = uploaded_file.read()
+                # UTF-8 veya alternatif kodlamaları dener
+                try:
+                    metin_icerik = dosya_icerik.decode('utf-8')
+                except UnicodeDecodeError:
+                    metin_icerik = dosya_icerik.decode('latin-1')
+                
+                # Satırları ayır ve listeye at
+                ham_liste = metin_icerik.splitlines()
             
-            # İlk sütundaki tüm ham verileri listeye al (ASCII 29 karakterleri korunur)
-            ham_liste = df.iloc[:, 0].dropna().tolist()
-            
-            # Sadece başlık satırlarını ayıkla
+            # Başlık satırlarını ayıkla ve temizle
             veri_listesi = veriyi_temizle(ham_liste)
             toplam_veri = len(veri_listesi)
             
@@ -82,7 +93,7 @@ with tab1:
                 
             kodlama = "utf-16" if kodlama_secim == "UTF-16" else "utf-8"
             
-            # Sıfır tırnak müdahalesi, ham bayt çıktı üretimi
+            # Ham byte korumalı çıktı fonksiyonu
             txt_data = matrisi_txt_yap(yeni_matris, kodlama)
             
             temiz_yon = "yatay" if "Yatay" in yon_secim else "dikey"
@@ -120,10 +131,8 @@ with tab2:
                         pix = page.get_pixmap(dpi=300)
                         img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
                         
-                        # zxing-cpp barkod okuma
                         results = zxingcpp.read_barcodes(img)
                         for res in results:
-                            # res.text yerine doğrudan ham bytes verisini stringe dönüştürerek ASCII 29'u kayıpsız koruyoruz
                             if res.text:
                                 barkodlar.append(res.text)
                 else:
@@ -165,7 +174,6 @@ with tab2:
                         
                     kodlama_b = "utf-16" if enc_b == "UTF-16" else "utf-8"
                     
-                    # Ham bayt korumalı yazdırma
                     txt_data_b = matrisi_txt_yap(matris_b, kodlama_b)
                     
                     t_yon = "yatay" if "Yatay" in yon_b else "dikey"
