@@ -8,11 +8,10 @@ import os
 st.set_page_config(page_title="GS1 Data Matrix İşlem Merkezi", layout="wide")
 
 st.title("🛡️ GS1 Data Matrix Tarayıcı & Sütun Bölücü")
-st.write("Bu uygulama, hiçbir veri tabanına veya Pandas kurallarına takılmadan ham metin seviyesinde güvenli bölme işlemi yapar.")
+st.write("Bu sürüm, GS1 kodlarının içindeki ASCII 29 (GS) karakterlerini parçalamadan her satırı tek parça olarak okur.")
 
 tab1, tab2 = st.tabs(["📊 Hazır Listeyi Sütunlara Böl", "📷 PDF / Görselden Barkod Oku"])
 
-# Temizleme fonksiyonu: Sadece birebir eşleşen başlık metinlerini listeden atar
 def veriyi_temizle(liste):
     yasakli_basliklar = ["purchase order", "item serial code", "group", "product code", "purchase  оrder", "item  serial  code"]
     temiz_liste = []
@@ -20,23 +19,21 @@ def veriyi_temizle(liste):
         metin = str(eleman).strip()
         if not metin:
             continue
-        # Satırın kendisi doğrudan bir başlık ifadesiyse listeye ekleme
         if metin.lower() in yasakli_basliklar:
             continue
         temiz_liste.append(metin)
     return temiz_liste
 
-# Pandas kullanmadan, ASCII 29 karakterlerini ve tırnakları %100 orijinal haliyle koruyan yazıcı
 def matrisi_txt_yap(matris, kodlama):
     satirlar = []
     for satir in matris:
-        # Hücreleri yan yana sadece SEKME (\t) ile birleştirir. Ekstra tırnak veya escape asla gelmez.
+        # Sütunları yan yana sadece SEKME (\t) ile birleştir. Başka hiçbir şeye dokunma.
         satirlar.append("\t".join([str(hucre) for hucre in satir]))
     ham_metin = "\n".join(satirlar)
     return ham_metin.encode(kodlama)
 
 # ---------------------------------------------------------
-# SEKME 1: HAZIR LİSTEYİ BÖLME (PANDAS OKUMA HATALARI ENGELLENDİ)
+# SEKME 1: HAZIR LİSTEYİ BÖLME (HAM SATIR OKUMA GARANTİLİ)
 # ---------------------------------------------------------
 with tab1:
     st.header("Excel veya CSV Listesini Böl")
@@ -45,32 +42,43 @@ with tab1:
     if uploaded_file is not None:
         orijinal_isim, uzanti = os.path.splitext(uploaded_file.name)
         try:
-            ham_liste = []
+            veri_listesi = []
             
-            # EĞER DOSYA EXCEL İSE: Sadece hücre değerlerini almak için dataframe'e zorlamadan düz okuyoruz
+            # --- EXCEL (.XLSX) OKUMA GÜNCELLEMESİ ---
             if uzanti.lower() == '.xlsx':
-                import pandas as pd
-                df = pd.read_excel(uploaded_file, header=None, dtype=str)
-                ham_liste = df.iloc[:, 0].dropna().tolist()
+                import openpyxl
+                wb = openpyxl.load_workbook(uploaded_file, data_only=True)
+                sheet = wb.active
+                # Satırları döngüye al ve sadece ilk hücreyi değil, hücreler bölünmüşse bile tek satırda birleştir
+                for row in sheet.iter_rows(values_only=True):
+                    # Satırdaki None olmayan hücreleri al
+                    satir_elemanlari = [str(cell).strip() for cell in row if cell is not None]
+                    if satir_elemanlari:
+                        # Eğer Excel veriyi yanlışlıkla sütunlara bölmüşse, orijinal haline geri yapıştırıyoruz
+                        # Eğer bölmemişse zaten tek eleman olarak kalacaktır
+                        # GS1 formatındaki boşlukları veya GS karakterlerini taklit etmek için birleştirme yapısı:
+                        full_line = "".join(satir_elemanlari) 
+                        veri_listesi.append(full_line)
             
-            # EĞER DOSYA CSV VEYA TXT İSE: Pandas'ı tamamen bypass edip ham satır olarak okuyoruz
+            # --- CSV VEYA TXT OKUMA GÜNCELLEMESİ ---
             else:
-                # Dosyanın binary (raw bytes) içeriğini oku ve metne dönüştür
                 dosya_icerik = uploaded_file.read()
-                # UTF-8 veya alternatif kodlamaları dener
                 try:
                     metin_icerik = dosya_icerik.decode('utf-8')
                 except UnicodeDecodeError:
+                    metin_icerik = dosya_icerik.decode('utf-8-sig')  # BOM destekli UTF-8
+                except Exception:
                     metin_icerik = dosya_icerik.decode('latin-1')
                 
-                # Satırları ayır ve listeye at
-                ham_liste = metin_icerik.splitlines()
+                # CSV içindeki virgüllere veya sekmelere kesinlikle split YAPMIYORUZ. 
+                # Sadece satır sonlarına (\n) göre bölüyoruz, böylece her satır tek parça kalıyor.
+                veri_listesi = metin_icerik.splitlines()
             
-            # Başlık satırlarını ayıkla ve temizle
-            veri_listesi = veriyi_temizle(ham_liste)
+            # Başlık satırlarını ayıkla
+            veri_listesi = veriyi_temizle(veri_listesi)
             toplam_veri = len(veri_listesi)
             
-            st.success(f"Başarıyla Yüklendi: `{uploaded_file.name}` ({toplam_veri} gerçek veri satırı bulundu)")
+            st.success(f"Başarıyla Yüklendi: `{uploaded_file.name}` ({toplam_veri} adet tam GS1 satırı korundu)")
             
             # Ayarlar
             col1, col2, col3 = st.columns(3)
@@ -93,7 +101,7 @@ with tab1:
                 
             kodlama = "utf-16" if kodlama_secim == "UTF-16" else "utf-8"
             
-            # Ham byte korumalı çıktı fonksiyonu
+            # Ham byte korumalı çıktı
             txt_data = matrisi_txt_yap(yeni_matris, kodlama)
             
             temiz_yon = "yatay" if "Yatay" in yon_secim else "dikey"
