@@ -1,196 +1,68 @@
 import streamlit as st
-import numpy as np
-import fitz  # PyMuPDF
-from PIL import Image
-import zxingcpp
 import os
 
-st.set_page_config(page_title="GS1 Data Matrix İşlem Merkezi", layout="wide")
+st.set_page_config(page_title="GS1 Data Matrix Bölücü", layout="centered")
 
-st.title("🛡️ GS1 Data Matrix Tarayıcı & Sütun Bölücü")
-st.write("Bu sürüm, ham metin (.txt) dosyalarınızı ASCII 29 (GS) karakterlerini bozmadan doğrudan okur ve istediğiniz sütuna böler.")
+st.title("🛡️ GS1 Data Matrix Sütun Bölücü")
+st.write("Ham metin (.txt) dosyanızı yükleyin. Herhangi bir kütüphane veya filtre kullanılmadan ham veri 5 sütuna bölünür.")
 
-tab1, tab2 = st.tabs(["📊 Hazır Listeyi Sütunlara Böl", "📷 PDF / Görselden Barkod Oku"])
+# Sadece TXT kabul ediyoruz ki Excel/CSV kütüphaneleri veriyi bozmasın
+uploaded_file = st.file_uploader("Listenizi Seçin (.txt)", type=["txt"])
 
-def veriyi_temizle(liste):
-    yasakli_basliklar = ["purchase order", "item serial code", "group", "product code", "purchase  оrder", "item  serial  code"]
-    temiz_liste = []
-    for eleman in liste:
-        metin = str(eleman).strip()
-        if not metin:
-            continue
-        if metin.lower() in yasakli_basliklar:
-            continue
-        temiz_liste.append(metin)
-    return temiz_liste
-
-def matrisi_txt_yap(matris, kodlama):
-    satirlar = []
-    for satir in matris:
-        # Sütunları yan yana sadece SEKME (\t) ile birleştir. Başka hiçbir şeye dokunma.
-        satirlar.append("\t".join([str(hucre) for hucre in satir]))
-    ham_metin = "\n".join(satirlar)
-    return ham_metin.encode(kodlama)
-
-# ---------------------------------------------------------
-# SEKME 1: HAZIR LİSTEYİ BÖLME (.TXT, .XLSX, .CSV DESTEKLİ)
-# ---------------------------------------------------------
-with tab1:
-    st.header("Metin (TXT), Excel veya CSV Listesini Böl")
-    # Dosya yükleyiciye "txt" uzantısını ekledik
-    uploaded_file = st.file_uploader("Listenizi Seçin (.txt, .xlsx, .csv)", type=["txt", "xlsx", "csv"], key="file_splitter")
-
-    if uploaded_file is not None:
-        orijinal_isim, uzanti = os.path.splitext(uploaded_file.name)
+if uploaded_file is not None:
+    orijinal_isim, _ = os.path.splitext(uploaded_file.name)
+    try:
+        # 1. Dosyayı ham bayt olarak oku ve metne çevir (İçindeki gizli karakterleri bozmaz)
+        dosya_icerik = uploaded_file.read()
         try:
-            veri_listesi = []
-            
-            # --- EXCEL (.XLSX) OKUMA ---
-            if uzanti.lower() == '.xlsx':
-                import openpyxl
-                wb = openpyxl.load_workbook(uploaded_file, data_only=True)
-                sheet = wb.active
-                for row in sheet.iter_rows(values_only=True):
-                    satir_elemanlari = [str(cell).strip() for cell in row if cell is not None]
-                    if satir_elemanlari:
-                        full_line = "".join(satir_elemanlari) 
-                        veri_listesi.append(full_line)
-            
-            # --- HAM METIN (.TXT) VEYA CSV OKUMA ---
-            else:
-                dosya_icerik = uploaded_file.read()
-                try:
-                    metin_icerik = dosya_icerik.decode('utf-8')
-                except UnicodeDecodeError:
-                    metin_icerik = dosya_icerik.decode('utf-8-sig')  # BOM destekli UTF-8
-                except Exception:
-                    metin_icerik = dosya_icerik.decode('latin-1')
-                
-                # Sadece satır sonlarına (\n) göre bölüyoruz, satır içi karakterlere dokunmuyoruz
-                veri_listesi = metin_icerik.splitlines()
-            
-            # Başlık satırlarını ayıkla
-            veri_listesi = veriyi_temizle(veri_listesi)
-            toplam_veri = len(veri_listesi)
-            
-            st.success(f"Başarıyla Yüklendi: `{uploaded_file.name}` ({toplam_veri} adet tam GS1 satırı korundu)")
-            
-            # Ayarlar
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                sutun_sayisi = st.number_input("Sütun Sayısı", min_value=1, max_value=20, value=5, step=1, key="col_num1")
-            with col2:
-                yon_secim = st.radio("Dizilim Yönü", ["Soldan Sağa (Yatay)", "Yukarıdan Aşağıya (Dikey)"], key="dir1")
-            with col3:
-                kodlama_secim = st.radio("Karakter Kodlaması (Encoding)", ["UTF-16", "UTF-8"], key="enc1")
-
-            toplam_satir = int(np.ceil(toplam_veri / sutun_sayisi))
-            eksik_sayisi = (toplam_satir * sutun_sayisi) - toplam_veri
-            if eksik_sayisi > 0:
-                veri_listesi.extend([""] * eksik_sayisi)
-                
-            if yon_secim == "Soldan Sağa (Yatay)":
-                yeni_matris = np.array(veri_listesi).reshape(toplam_satir, sutun_sayisi)
-            else:
-                yeni_matris = np.array(veri_listesi).reshape(sutun_sayisi, toplam_satir).T
-                
-            kodlama = "utf-16" if kodlama_secim == "UTF-16" else "utf-8"
-            
-            # Ham byte korumalı çıktı
-            txt_data = matrisi_txt_yap(yeni_matris, kodlama)
-            
-            temiz_yon = "yatay" if "Yatay" in yon_secim else "dikey"
-            cikti_dosya_adi = f"{orijinal_isim}_{sutun_sayisi}sutun_{temiz_yon}_{kodlama}.txt"
-            
-            st.download_button(
-                label="📥 Bölünen TXT Dosyasını İndir",
-                data=txt_data,
-                file_name=cikti_dosya_adi,
-                mime="text/plain",
-                key="btn_dl1"
-            )
-        except Exception as e:
-            st.error(f"Hata: {e}")
-
-# ---------------------------------------------------------
-# SEKME 2: ZXING-CPP İLE BARKOD OKUMA (PDF veya GÖRSEL)
-# ---------------------------------------------------------
-with tab2:
-    st.header("zxing-cpp ile Doğrudan Dokümandan Okuma")
-    st.info("Bu sekme, PDF veya görsellerdeki barkodları tarayıp içlerindeki ham GS1 verilerini (ASCII 29 dahil) yakalar.")
-    
-    media_file = st.file_uploader("Barkodlu PDF veya Görsel Yükleyin", type=["pdf", "png", "jpg", "jpeg"])
-    
-    if media_file is not None:
-        barkodlar = []
-        m_isim, m_uzanti = os.path.splitext(media_file.name)
+            metin = dosya_icerik.decode('utf-8')
+        except:
+            metin = dosya_icerik.decode('latin-1')
         
-        with st.spinner("zxing-cpp motoru barkodları tarıyor..."):
-            try:
-                if m_uzanti.lower() == ".pdf":
-                    doc = fitz.open(stream=media_file.read(), filetype="pdf")
-                    for sayfa_no in range(len(doc)):
-                        page = doc.load_page(sayfa_no)
-                        pix = page.get_pixmap(dpi=300)
-                        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-                        
-                        results = zxingcpp.read_barcodes(img)
-                        for res in results:
-                            if res.text:
-                                barkodlar.append(res.text)
-                else:
-                    img = Image.open(media_file)
-                    results = zxingcpp.read_barcodes(img)
-                    for res in results:
-                        if res.text:
-                            barkodlar.append(res.text)
+        # 2. Satırları tertemiz bir listeye al
+        ham_satirlar = metin.splitlines()
+        
+        # Başlıkları eliyoruz
+        yasakli_basliklar = ["purchase order", "item serial code", "group", "product code", "purchase  оrder", "item  serial  code"]
+        veri_listesi = [s.strip() for s in ham_satirlar if s.strip() and s.strip().lower() not in yasakli_basliklar]
+        
+        st.success(f"Başarıyla Yüklendi! Toplam {len(veri_listesi)} adet GS1 kodu bulundu.")
+        
+        # 3. İnteraktif Sorular
+        sutun_sayisi = st.number_input("Sütun Sayısı", min_value=1, max_value=20, value=5, step=1)
+        kodlama_secim = st.radio("Karakter Kodlaması", ["UTF-16", "UTF-8"])
+        
+        # 4. Veriyi Matematiksel Bloklar Halinde El ile Yan Yana Dizme (NumPy Yok!)
+        yeni_satirlar = []
+        for i in range(0, len(veri_listesi), sutun_sayisi):
+            # O anki 5'li grubu al (Örn: 0-5 arası, sonra 5-10 arası...)
+            grup = veri_listesi[i:i+sutun_sayisi]
+            
+            # Eğer son grupta 5 eleman yoksa eksik yerleri boşlukla doldur
+            while len(grup) < sutun_sayisi:
+                grup.append("")
                 
-                barkodlar = veriyi_temizle(barkodlar)
-                
-                if barkodlar:
-                    toplam_okunan = len(barkodlar)
-                    st.success(f"🎉 Toplam {toplam_okunan} adet DataMatrix barkodu başarıyla okundu!")
-                    
-                    with st.expander("Okunan Barkod Listesini Gör"):
-                        st.write(barkodlar)
-                    
-                    st.markdown("---")
-                    st.subheader("📋 Okunan Barkodları Sütunlara Böl ve İndir")
-                    
-                    col1_b, col2_b, col3_b = st.columns(3)
-                    with col1_b:
-                        sutun_b = st.number_input("Sütun Sayısı", min_value=1, max_value=20, value=5, step=1, key="col_num2")
-                    with col2_b:
-                        yon_b = st.radio("Dizilim Yönü", ["Soldan Sağa (Yatay)", "Yukarıdan Aşağıya (Dikey)"], key="dir2")
-                    with col3_b:
-                        enc_b = st.radio("Karakter Kodlaması (Encoding)", ["UTF-16", "UTF-8"], key="enc2")
-                    
-                    t_satir = int(np.ceil(toplam_okunan / sutun_b))
-                    e_sayisi = (t_satir * sutun_b) - toplam_okunan
-                    if e_sayisi > 0:
-                        barkodlar.extend([""] * e_sayisi)
-                        
-                    if yon_b == "Soldan Sağa (Yatay)":
-                        matris_b = np.array(barkodlar).reshape(t_satir, sutun_b)
-                    else:
-                        matris_b = np.array(barkodlar).reshape(sutun_b, t_satir).T
-                        
-                    kodlama_b = "utf-16" if enc_b == "UTF-16" else "utf-8"
-                    
-                    txt_data_b = matrisi_txt_yap(matris_b, kodlama_b)
-                    
-                    t_yon = "yatay" if "Yatay" in yon_b else "dikey"
-                    b_cikti_adi = f"{m_isim}_okunan_{sutun_b}sutun_{t_yon}_{kodlama_b}.txt"
-                    
-                    st.download_button(
-                        label="📥 Okunan Barkodları TXT Olarak İndir",
-                        data=txt_data_b,
-                        file_name=b_cikti_adi,
-                        mime="text/plain",
-                        key="btn_dl2"
-                    )
-                else:
-                    st.warning("Belgede veya görselde okunabilir hiçbir DataMatrix barkodu bulunamadı.")
-                    
-            except Exception as e:
-                st.error(f"Barkod tarama esnasında hata oluştu: {e}")
+            # Elemanları yan yana SEKME (TAB) karakteriyle birleştir
+            yeni_satir = "\t".join(grup)
+            yeni_satirlar.append(yeni_satir)
+            
+        # Tüm yeni satırları alt alta birleştirerek tek bir dev metin bloğu yap
+        final_metin = "\n".join(yeni_satirlar)
+        
+        # 5. Seçilen Kodlamaya Göre Dosyayı Bayt Olarak Hazırla
+        kodlama = "utf-16" if kodlama_secim == "UTF-16" else "utf-8"
+        txt_bayt = final_metin.encode(kodlama)
+        
+        cikti_dosya_adi = f"{orijinal_isim}_{sutun_sayisi}sutun_{kodlama}.txt"
+        
+        st.markdown("---")
+        # İndirme Butonu
+        st.download_button(
+            label="📥 Bölünen TXT Dosyasını İndir",
+            data=txt_bayt,
+            file_name=cikti_dosya_adi,
+            mime="text/plain"
+        )
+        
+    except Exception as e:
+        st.error(f"Süreçte hata oluştu: {e}")
