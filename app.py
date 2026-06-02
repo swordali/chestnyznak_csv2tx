@@ -1,62 +1,116 @@
 import streamlit as st
+import numpy as np
+import openpyxl
 import os
 
-st.set_page_config(page_title="GS1 Data Matrix Bölücü", layout="centered")
+st.set_page_config(page_title="GS1 Data Matrix Bölücü", layout="wide")
 
 st.title("🛡️ GS1 Data Matrix Sütun Bölücü")
-st.write("Ham metin (.txt) dosyanızı yükleyin. Herhangi bir kütüphane veya filtre kullanılmadan ham veri 5 sütuna bölünür.")
+st.write("Excel (.xlsx) veya CSV dosyanızı yükleyin. Dağılmış sütunlar ASCII 29 (GS) karakteri eklenerek birleştirilir ve 5 sütuna bölünür.")
 
-# Sadece TXT kabul ediyoruz ki Excel/CSV kütüphaneleri veriyi bozmasın
-uploaded_file = st.file_uploader("Listenizi Seçin (.txt)", type=["txt"])
+uploaded_file = st.file_uploader("Listenizi Seçin (.xlsx, .csv)", type=["xlsx", "csv"])
+
+# Başlık kelimelerini temizleme süzgeci
+def baslik_mi(metin):
+    yasakli = ["purchase order", "item serial code", "group", "product code", "purchase", "order", "serial", "code"]
+    return metin.strip().lower() in yasakli
 
 if uploaded_file is not None:
-    orijinal_isim, _ = os.path.splitext(uploaded_file.name)
+    orijinal_isim, uzanti = os.path.splitext(uploaded_file.name)
     try:
-        # 1. Dosyayı ham bayt olarak oku ve metne çevir (İçindeki gizli karakterleri bozmaz)
-        dosya_icerik = uploaded_file.read()
-        try:
-            metin = dosya_icerik.decode('utf-8')
-        except:
-            metin = dosya_icerik.decode('latin-1')
+        ham_gs1_kodlari = []
         
-        # 2. Satırları tertemiz bir listeye al
-        ham_satirlar = metin.splitlines()
-        
-        # Başlıkları eliyoruz
-        yasakli_basliklar = ["purchase order", "item serial code", "group", "product code", "purchase  оrder", "item  serial  code"]
-        veri_listesi = [s.strip() for s in ham_satirlar if s.strip() and s.strip().lower() not in yasakli_basliklar]
-        
-        st.success(f"Başarıyla Yüklendi! Toplam {len(veri_listesi)} adet GS1 kodu bulundu.")
-        
-        # 3. İnteraktif Sorular
-        sutun_sayisi = st.number_input("Sütun Sayısı", min_value=1, max_value=20, value=5, step=1)
-        kodlama_secim = st.radio("Karakter Kodlaması", ["UTF-16", "UTF-8"])
-        
-        # 4. Veriyi Matematiksel Bloklar Halinde El ile Yan Yana Dizme (NumPy Yok!)
-        yeni_satirlar = []
-        for i in range(0, len(veri_listesi), sutun_sayisi):
-            # O anki 5'li grubu al (Örn: 0-5 arası, sonra 5-10 arası...)
-            grup = veri_listesi[i:i+sutun_sayisi]
+        # --- 1. ADIM: EXCEL (.XLSX) DOSYASINI OKUMA VE GS KARAKTERİ İLE BİRLEŞTİRME ---
+        if uzanti.lower() == '.xlsx':
+            wb = openpyxl.load_workbook(uploaded_file, data_only=True)
+            sheet = wb.active
             
-            # Eğer son grupta 5 eleman yoksa eksik yerleri boşlukla doldur
+            for row in sheet.iter_rows(values_only=True):
+                # Satırdaki boş olmayan hücreleri yazı tipine çevirip alıyoruz
+                hucreler = [str(c).strip() for c in row if c is not None]
+                if not hucreler:
+                    continue
+                
+                # Eğer ilk hücre başlıksa tüm satırı geç
+                if baslik_mi(hucreler[0]):
+                    continue
+                
+                # EKRAN GÖRÜNTÜSÜNDEKİ HATANIN ÇÖZÜMÜ:
+                # Eğer veri Excel tarafından sütunlara bölünmüşse, onları araya ASCII 29 (\x1d) koyarak birleştir
+                # Eğer zaten tek sütundaysa, olduğu gibi listeye eklenir
+                if len(hucreler) >= 3:
+                    # Örn: 01046... + GS + 91EE11 + GS + 92XAw...
+                    gatin_serial = hucreler[0]
+                    crypto_key = hucreler[1]
+                    crypto_tail = hucreler[2]
+                    tam_kod = f"{gatin_serial}\x1d{crypto_key}\x1d{crypto_tail}"
+                else:
+                    tam_kod = "".join(hucreler)
+                
+                ham_gs1_kodlari.append(tam_kod)
+                
+        # --- 2. ADIM: CSV DOSYASINI OKUMA VE GS KARAKTERİ İLE BİRLEŞTİRME ---
+        else:
+            dosya_icerik = uploaded_file.read()
+            try:
+                metin = dosya_icerik.decode('utf-8')
+            except:
+                metin = dosya_icerik.decode('latin-1')
+            
+            for line in metin.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                
+                # CSV virgül, noktalı virgül veya sekme (tab) ile ayrılmış olabilir, hepsini kontrol et
+                ayirici = None
+                for ayir in ['\t', ';', ',']:
+                    if ayir in line:
+                        ayirici = ayir
+                        break
+                
+                if ayirici:
+                    hucreler = [c.strip() for c in line.split(ayirici) if c.strip()]
+                    if not hucreler or baslik_mi(hucreler[0]):
+                        continue
+                    if len(hucreler) >= 3:
+                        tam_kod = f"{hucreler[0]}\x1d{hucreler[1]}\x1d{hucreler[2]}"
+                    else:
+                        tam_kod = "".join(hucreler)
+                else:
+                    if baslik_mi(line):
+                        continue
+                    tam_kod = line
+                
+                ham_gs1_kodlari.append(tam_kod)
+
+        toplam_veri = len(ham_gs1_kodlari)
+        st.success(f"Başarıyla İşlendi! {toplam_veri} adet tam ve korunan GS1 satırı elde edildi.")
+        
+        # --- 3. ADIM: 5 SÜTUNA BÖLME VE SEÇİMLER ---
+        col1, col2 = st.columns(2)
+        with col1:
+            sutun_sayisi = st.number_input("Sütun Sayısı", min_value=1, max_value=20, value=5, step=1)
+        with col2:
+            kodlama_secim = st.radio("Karakter Kodlaması", ["UTF-16", "UTF-8"])
+            
+        # 5'li gruplara bölerek matrisi elle oluşturma
+        yeni_satirlar = []
+        for i in range(0, toplam_veri, sutun_sayisi):
+            grup = ham_gs1_kodlari[i:i+sutun_sayisi]
             while len(grup) < sutun_sayisi:
                 grup.append("")
-                
-            # Elemanları yan yana SEKME (TAB) karakteriyle birleştir
-            yeni_satir = "\t".join(grup)
-            yeni_satirlar.append(yeni_satir)
+            yeni_satirlar.append("\t".join(grup))
             
-        # Tüm yeni satırları alt alta birleştirerek tek bir dev metin bloğu yap
         final_metin = "\n".join(yeni_satirlar)
         
-        # 5. Seçilen Kodlamaya Göre Dosyayı Bayt Olarak Hazırla
+        # Kodlama ayarlama (UTF-16 LE)
         kodlama = "utf-16" if kodlama_secim == "UTF-16" else "utf-8"
         txt_bayt = final_metin.encode(kodlama)
         
         cikti_dosya_adi = f"{orijinal_isim}_{sutun_sayisi}sutun_{kodlama}.txt"
         
         st.markdown("---")
-        # İndirme Butonu
         st.download_button(
             label="📥 Bölünen TXT Dosyasını İndir",
             data=txt_bayt,
@@ -65,4 +119,4 @@ if uploaded_file is not None:
         )
         
     except Exception as e:
-        st.error(f"Süreçte hata oluştu: {e}")
+        st.error(f"İşlem sırasında bir sorun oluştu: {e}")
