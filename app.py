@@ -5,7 +5,6 @@ import fitz  # PyMuPDF
 from PIL import Image
 import zxingcpp
 import os
-import csv  # Tırnak işaretlerini engellemek için gerekli
 
 st.set_page_config(page_title="GS1 Data Matrix İşlem Merkezi", layout="wide")
 
@@ -13,6 +12,27 @@ st.title("🛡️ GS1 Data Matrix Tarayıcı & Sütun Bölücü")
 st.write("Bu uygulama `zxing-cpp` motoru kullanarak görsellerden/PDF'lerden GS1 DataMatrix barkodlarını okuyabilir veya hazır listelerinizi sütunlara bölebilir.")
 
 tab1, tab2 = st.tabs(["📊 Hazır Listeyi Sütunlara Böl", "📷 PDF / Görselden Barkod Oku"])
+
+# Temizleme fonksiyonu: Başlıkları ve gereksiz satırları eler
+def veriyi_temizle(liste):
+    yasakli_kelimeler = ["purchase", "order", "item", "serial", "code", "group"]
+    temiz_liste = []
+    for eleman in liste:
+        metin = str(eleman).strip()
+        # Eğer satır boşsa veya yasaklı kelimelerden birini içeriyorsa listeye ekleme
+        if not metin or any(kelime in metin.lower() for kelime in yasakli_kelimeler):
+            continue
+        temiz_liste.append(metin)
+    return temiz_liste
+
+# Ham metin birleştirici: Pandas kullanmadan tırnaksız ve temiz TXT üretir
+def matrisi_txt_yap(matris, kodlama):
+    satirlar = []
+    for satir in matris:
+        # Satırdaki verileri doğrudan TAB (\t) ile birleştir, tırnak koruması veya escape ekleme!
+        satirlar.append("\t".join([str(hucre) for hucre in satir]))
+    ham_metin = "\n".join(satirlar)
+    return ham_metin.encode(kodlama)
 
 # ---------------------------------------------------------
 # SEKME 1: HAZIR LİSTEYİ BÖLME
@@ -24,22 +44,25 @@ with tab1:
     if uploaded_file is not None:
         orijinal_isim, uzanti = os.path.splitext(uploaded_file.name)
         try:
-            # Başlık satırını (Group, Purchase order vb.) atlamak için header=0 yapıyoruz. 
-            # Eğer dosyada hiç başlık yoksa ve ilk satırdan veri başlıyorsa header=None yapabilirsiniz.
+            # Excel veya CSV'yi ham haliyle oku
             if uzanti.lower() == '.xlsx':
-                df = pd.read_excel(uploaded_file, header=0)
+                df = pd.read_excel(uploaded_file, header=None)
             else:
-                df = pd.read_csv(uploaded_file, header=0)
+                df = pd.read_csv(uploaded_file, header=None)
             
-            # İlk sütundaki verileri temiz bir listeye al
-            veri_listesi = df.iloc[:, 0].dropna().astype(str).tolist()
+            # İlk sütundaki tüm verileri al
+            ham_liste = df.iloc[:, 0].dropna().tolist()
+            
+            # Başlık satırlarını temizle
+            veri_listesi = veriyi_temizle(ham_liste)
             toplam_veri = len(veri_listesi)
-            st.success(f"Başarıyla Yüklendi: `{uploaded_file.name}` ({toplam_veri} satır veri bulundu - Başlık satırı atlandı)")
+            
+            st.success(f"Başarıyla Yüklendi: `{uploaded_file.name}` ({toplam_veri} gerçek veri satırı bulundu - Başlıklar ayıklandı)")
             
             # Ayarlar
             col1, col2, col3 = st.columns(3)
             with col1:
-                sutun_sayisi = st.number_input("Sütun Sayanız", min_value=1, max_value=20, value=5, step=1, key="col_num1")
+                sutun_sayisi = st.number_input("Sütun Sayısı", min_value=1, max_value=20, value=5, step=1, key="col_num1")
             with col2:
                 yon_secim = st.radio("Dizilim Yönü", ["Soldan Sağa (Yatay)", "Yukarıdan Aşağıya (Dikey)"], key="dir1")
             with col3:
@@ -47,20 +70,18 @@ with tab1:
 
             toplam_satir = int(np.ceil(toplam_veri / sutun_sayisi))
             eksik_sayisi = (toplam_satir * sutun_sayisi) - toplam_veri
-            if e_sayisi := eksik_sayisi:
-                if e_sayisi > 0:
-                    veri_listesi.extend([""] * e_sayisi)
+            if eksik_sayisi > 0:
+                veri_listesi.extend([""] * eksik_sayisi)
                 
             if yon_secim == "Soldan Sağa (Yatay)":
                 yeni_matris = np.array(veri_listesi).reshape(toplam_satir, sutun_sayisi)
             else:
                 yeni_matris = np.array(veri_listesi).reshape(sutun_sayisi, toplam_satir).T
                 
-            yeni_df = pd.DataFrame(yeni_matris)
             kodlama = "utf-16" if kodlama_secim == "UTF-16" else "utf-8"
             
-            # Tırnak işaretlerinin oluşmasını kesin olarak engelleyen parametreler (quoting ve escapechar)
-            txt_data = yeni_df.to_csv(sep='\t', index=False, header=False, encoding=kodlama, quoting=csv.QUOTE_NONE, escapechar=" ")
+            # Geliştirilmiş tırnaksız ham yazdırma fonksiyonunu çağırıyoruz
+            txt_data = matrisi_txt_yap(yeni_matris, kodlama)
             
             temiz_yon = "yatay" if "Yatay" in yon_secim else "dikey"
             cikti_dosya_adi = f"{orijinal_isim}_{sutun_sayisi}sutun_{temiz_yon}_{kodlama}.txt"
@@ -82,7 +103,7 @@ with tab2:
     st.header("zxing-cpp ile Doğrudan Dokümandan Okuma")
     st.info("Buraya yükleyeceğiniz PDF veya resimlerin (PNG/JPG) içindeki DataMatrix kodları taranarak listeye dönüştürülür.")
     
-    media_file = st.file_uploader("Barkodlu PDF or Görsel Yükleyin", type=["pdf", "png", "jpg", "jpeg"])
+    media_file = st.file_uploader("Barkodlu PDF veya Görsel Yükleyin", type=["pdf", "png", "jpg", "jpeg"])
     
     if media_file is not None:
         barkodlar = []
@@ -107,6 +128,9 @@ with tab2:
                     for res in results:
                         if res.text:
                             barkodlar.append(res.text)
+                
+                # Okunan barkodları da temizleme süzgecine gönderelim (opsiyonel)
+                barkodlar = veriyi_temizle(barkodlar)
                 
                 if barkodlar:
                     toplam_okunan = len(barkodlar)
@@ -136,11 +160,10 @@ with tab2:
                     else:
                         matris_b = np.array(barkodlar).reshape(sutun_b, t_satir).T
                         
-                    df_b = pd.DataFrame(matris_b)
                     kodlama_b = "utf-16" if enc_b == "UTF-16" else "utf-8"
                     
-                    # Tırnak işaretlerinin oluşmasını kesin olarak engelleyen parametreler (quoting ve escapechar)
-                    txt_data_b = df_b.to_csv(sep='\t', index=False, header=False, encoding=kodlama_b, quoting=csv.QUOTE_NONE, escapechar=" ")
+                    # Geliştirilmiş tırnaksız ham yazdırma fonksiyonu
+                    txt_data_b = matrisi_txt_yap(matris_b, kodlama_b)
                     
                     t_yon = "yatay" if "Yatay" in yon_b else "dikey"
                     b_cikti_adi = f"{m_isim}_okunan_{sutun_b}sutun_{t_yon}_{kodlama_b}.txt"
