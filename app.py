@@ -8,7 +8,7 @@ import os
 st.set_page_config(page_title="GS1 Data Matrix İşlem Merkezi", layout="wide")
 
 st.title("🛡️ GS1 Data Matrix Tarayıcı & Sütun Bölücü")
-st.write("Bu sürüm, GS1 kodlarının içindeki ASCII 29 (GS) karakterlerini parçalamadan her satırı tek parça olarak okur.")
+st.write("Bu sürüm, ham metin (.txt) dosyalarınızı ASCII 29 (GS) karakterlerini bozmadan doğrudan okur ve istediğiniz sütuna böler.")
 
 tab1, tab2 = st.tabs(["📊 Hazır Listeyi Sütunlara Böl", "📷 PDF / Görselden Barkod Oku"])
 
@@ -33,34 +33,30 @@ def matrisi_txt_yap(matris, kodlama):
     return ham_metin.encode(kodlama)
 
 # ---------------------------------------------------------
-# SEKME 1: HAZIR LİSTEYİ BÖLME (HAM SATIR OKUMA GARANTİLİ)
+# SEKME 1: HAZIR LİSTEYİ BÖLME (.TXT, .XLSX, .CSV DESTEKLİ)
 # ---------------------------------------------------------
 with tab1:
-    st.header("Excel veya CSV Listesini Böl")
-    uploaded_file = st.file_uploader("Listenizi Seçin (.xlsx, .csv)", type=["xlsx", "csv"], key="file_splitter")
+    st.header("Metin (TXT), Excel veya CSV Listesini Böl")
+    # Dosya yükleyiciye "txt" uzantısını ekledik
+    uploaded_file = st.file_uploader("Listenizi Seçin (.txt, .xlsx, .csv)", type=["txt", "xlsx", "csv"], key="file_splitter")
 
     if uploaded_file is not None:
         orijinal_isim, uzanti = os.path.splitext(uploaded_file.name)
         try:
             veri_listesi = []
             
-            # --- EXCEL (.XLSX) OKUMA GÜNCELLEMESİ ---
+            # --- EXCEL (.XLSX) OKUMA ---
             if uzanti.lower() == '.xlsx':
                 import openpyxl
                 wb = openpyxl.load_workbook(uploaded_file, data_only=True)
                 sheet = wb.active
-                # Satırları döngüye al ve sadece ilk hücreyi değil, hücreler bölünmüşse bile tek satırda birleştir
                 for row in sheet.iter_rows(values_only=True):
-                    # Satırdaki None olmayan hücreleri al
                     satir_elemanlari = [str(cell).strip() for cell in row if cell is not None]
                     if satir_elemanlari:
-                        # Eğer Excel veriyi yanlışlıkla sütunlara bölmüşse, orijinal haline geri yapıştırıyoruz
-                        # Eğer bölmemişse zaten tek eleman olarak kalacaktır
-                        # GS1 formatındaki boşlukları veya GS karakterlerini taklit etmek için birleştirme yapısı:
                         full_line = "".join(satir_elemanlari) 
                         veri_listesi.append(full_line)
             
-            # --- CSV VEYA TXT OKUMA GÜNCELLEMESİ ---
+            # --- HAM METIN (.TXT) VEYA CSV OKUMA ---
             else:
                 dosya_icerik = uploaded_file.read()
                 try:
@@ -70,8 +66,7 @@ with tab1:
                 except Exception:
                     metin_icerik = dosya_icerik.decode('latin-1')
                 
-                # CSV içindeki virgüllere veya sekmelere kesinlikle split YAPMIYORUZ. 
-                # Sadece satır sonlarına (\n) göre bölüyoruz, böylece her satır tek parça kalıyor.
+                # Sadece satır sonlarına (\n) göre bölüyoruz, satır içi karakterlere dokunmuyoruz
                 veri_listesi = metin_icerik.splitlines()
             
             # Başlık satırlarını ayıkla
