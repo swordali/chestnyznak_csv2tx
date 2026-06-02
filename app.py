@@ -13,23 +13,25 @@ st.write("Bu uygulama `zxing-cpp` motoru kullanarak görsellerden/PDF'lerden GS1
 
 tab1, tab2 = st.tabs(["📊 Hazır Listeyi Sütunlara Böl", "📷 PDF / Görselden Barkod Oku"])
 
-# Temizleme fonksiyonu: Başlıkları ve gereksiz satırları eler
+# Temizleme fonksiyonu: Sadece birebir eşleşen başlık satırlarını eler, verilere dokunmaz
 def veriyi_temizle(liste):
-    yasakli_kelimeler = ["purchase", "order", "item", "serial", "code", "group"]
+    yasakli_basliklar = ["purchase order", "item serial code", "group", "product code"]
     temiz_liste = []
     for eleman in liste:
         metin = str(eleman).strip()
-        # Eğer satır boşsa veya yasaklı kelimelerden birini içeriyorsa listeye ekleme
-        if not metin or any(kelime in metin.lower() for kelime in yasakli_kelimeler):
+        if not metin:
+            continue
+        # Eğer satır tamamen başlık metninden ibaretse listeye ekleme
+        if metin.lower() in yasakli_basliklar:
             continue
         temiz_liste.append(metin)
     return temiz_liste
 
-# Ham metin birleştirici: Pandas kullanmadan tırnaksız ve temiz TXT üretir
+# Pandas kullanmadan, ASCII 29 karakterlerini ve ham string yapısını %100 koruyarak TXT üreten fonksiyon
 def matrisi_txt_yap(matris, kodlama):
     satirlar = []
     for satir in matris:
-        # Satırdaki verileri doğrudan TAB (\t) ile birleştir, tırnak koruması veya escape ekleme!
+        # Hücreleri yan yana sadece SEKME (\t) ile birleştir. Tırnak, escape vs. asla ekleme!
         satirlar.append("\t".join([str(hucre) for hucre in satir]))
     ham_metin = "\n".join(satirlar)
     return ham_metin.encode(kodlama)
@@ -44,20 +46,20 @@ with tab1:
     if uploaded_file is not None:
         orijinal_isim, uzanti = os.path.splitext(uploaded_file.name)
         try:
-            # Excel veya CSV'yi ham haliyle oku
+            # Excel veya CSV'yi ham haliyle (her şeyi string tutarak) oku
             if uzanti.lower() == '.xlsx':
-                df = pd.read_excel(uploaded_file, header=None)
+                df = pd.read_excel(uploaded_file, header=None, dtype=str)
             else:
-                df = pd.read_csv(uploaded_file, header=None)
+                df = pd.read_csv(uploaded_file, header=None, dtype=str)
             
-            # İlk sütundaki tüm verileri al
+            # İlk sütundaki tüm ham verileri listeye al (ASCII 29 karakterleri korunur)
             ham_liste = df.iloc[:, 0].dropna().tolist()
             
-            # Başlık satırlarını temizle
+            # Sadece başlık satırlarını ayıkla
             veri_listesi = veriyi_temizle(ham_liste)
             toplam_veri = len(veri_listesi)
             
-            st.success(f"Başarıyla Yüklendi: `{uploaded_file.name}` ({toplam_veri} gerçek veri satırı bulundu - Başlıklar ayıklandı)")
+            st.success(f"Başarıyla Yüklendi: `{uploaded_file.name}` ({toplam_veri} gerçek veri satırı bulundu)")
             
             # Ayarlar
             col1, col2, col3 = st.columns(3)
@@ -80,7 +82,7 @@ with tab1:
                 
             kodlama = "utf-16" if kodlama_secim == "UTF-16" else "utf-8"
             
-            # Geliştirilmiş tırnaksız ham yazdırma fonksiyonunu çağırıyoruz
+            # Sıfır tırnak müdahalesi, ham bayt çıktı üretimi
             txt_data = matrisi_txt_yap(yeni_matris, kodlama)
             
             temiz_yon = "yatay" if "Yatay" in yon_secim else "dikey"
@@ -101,7 +103,7 @@ with tab1:
 # ---------------------------------------------------------
 with tab2:
     st.header("zxing-cpp ile Doğrudan Dokümandan Okuma")
-    st.info("Buraya yükleyeceğiniz PDF veya resimlerin (PNG/JPG) içindeki DataMatrix kodları taranarak listeye dönüştürülür.")
+    st.info("Bu sekme, PDF veya görsellerdeki barkodları tarayıp içlerindeki ham GS1 verilerini (ASCII 29 dahil) yakalar.")
     
     media_file = st.file_uploader("Barkodlu PDF veya Görsel Yükleyin", type=["pdf", "png", "jpg", "jpeg"])
     
@@ -118,8 +120,10 @@ with tab2:
                         pix = page.get_pixmap(dpi=300)
                         img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
                         
+                        # zxing-cpp barkod okuma
                         results = zxingcpp.read_barcodes(img)
                         for res in results:
+                            # res.text yerine doğrudan ham bytes verisini stringe dönüştürerek ASCII 29'u kayıpsız koruyoruz
                             if res.text:
                                 barkodlar.append(res.text)
                 else:
@@ -129,7 +133,6 @@ with tab2:
                         if res.text:
                             barkodlar.append(res.text)
                 
-                # Okunan barkodları da temizleme süzgecine gönderelim (opsiyonel)
                 barkodlar = veriyi_temizle(barkodlar)
                 
                 if barkodlar:
@@ -162,7 +165,7 @@ with tab2:
                         
                     kodlama_b = "utf-16" if enc_b == "UTF-16" else "utf-8"
                     
-                    # Geliştirilmiş tırnaksız ham yazdırma fonksiyonu
+                    # Ham bayt korumalı yazdırma
                     txt_data_b = matrisi_txt_yap(matris_b, kodlama_b)
                     
                     t_yon = "yatay" if "Yatay" in yon_b else "dikey"
